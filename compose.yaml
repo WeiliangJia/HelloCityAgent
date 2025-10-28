@@ -1,0 +1,61 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: hc-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - hellocity-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    container_name: hellocity-ai-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env.local
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - hellocity-net
+    command: ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  celery:
+    build: .
+    container_name: hellocity-ai-worker
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env.local
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - hellocity-net
+    command: ["celery", "-A", "app.api.tasks", "worker", "--loglevel=info", "--pool=solo"]
+
+networks:
+  hellocity-net:
+    driver: bridge
+
+volumes:
+  redis_data:

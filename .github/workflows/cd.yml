@@ -1,0 +1,166 @@
+name: CD - EC2 (AI Service)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-2
+
+  # ECR + image details
+  ECR_REPO: ai-service
+  CONTAINER_API_NAME: hellocity-ai-api
+  CONTAINER_WORKER_NAME: hellocity-ai-worker
+
+  # EC2 selection
+  EC2_TAG_KEY: Role
+  EC2_TAG_VALUE: hellocity-app 
+
+  # Ports
+  APP_PORT: "8000"   # inside the container
+  HOST_PORT: "8080"  # different host port to avoid clashing with API's :80
+
+  # Secrets Manager name
+  SECRET_NAME: uat/ai-service
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Debug GH context (optional)
+        run: |
+          echo "repo=$GITHUB_REPOSITORY"
+          echo "ref=$GITHUB_REF"
+          echo "event=$GITHUB_EVENT_NAME"
+
+      - name: Configure AWS credentials (OIDC) for CD
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_CD_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Who am I? (optional)
+        run: aws sts get-caller-identity
+
+      - name: Identify running EC2 instances by tag
+        id: find
+        run: |
+          set -e
+          IDS=$(aws ec2 describe-instances \
+            --filters "Name=tag:${EC2_TAG_KEY},Values=${EC2_TAG_VALUE}" "Name=instance-state-name,Values=running" \
+            --query "Reservations[].Instances[].InstanceId" --output text)
+          [ -n "$IDS" ] || { echo "No running instances with ${EC2_TAG_KEY}=${EC2_TAG_VALUE}"; exit 1; }
+          echo "ids=$IDS" >> "$GITHUB_OUTPUT"
+
+      - name: ECR login (to build full image URIs)
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image URI vars
+        id: img
+        run: |
+          REG="${{ steps.ecr.outputs.registry }}"
+          SHA="${{ github.sha }}"
+          echo "image_sha=${REG}/${{ env.ECR_REPO }}:${SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_latest=${REG}/${{ env.ECR_REPO }}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy API + Worker on EC2 via SSM
+        run: |
+          set -e
+          SHORT_SHA="${GITHUB_SHA::7}"
+          COMMENT="Deploy ${ECR_REPO}:${SHORT_SHA}"
+
+          aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --instance-ids ${{ steps.find.outputs.ids }} \
+            --comment "$COMMENT" \
+            --parameters commands='[
+              "set -euo pipefail",
+
+              "# 0) Ensure Docker + jq",
+              "which docker || (sudo dnf -y install docker && sudo systemctl enable --now docker) || true",
+              "which jq || sudo dnf -y install jq || true",
+
+              "# 1) Fetch secret and render /opt/hellocity-ai/.env",
+              "RAW=$(aws secretsmanager get-secret-value --region ap-southeast-2 --secret-id uat/ai-service --query SecretString --output text || true)",
+              "sudo mkdir -p /opt/hellocity-ai",
+              "if [ -z \"$RAW\" ]; then echo \"Secret uat/ai-service empty\"; exit 1; fi",
+
+              "if echo \"$RAW\" | grep -q \"^{\"; then",
+              "  echo \"$RAW\" | jq -r \"to_entries|map(\\(.key + \\\"=\\\" + (.value|tostring)))|.[]\" | sudo tee /opt/hellocity-ai/.env >/dev/null",
+              "else",
+              "  printf \"%s\\n\" \"$RAW\" | sudo tee /opt/hellocity-ai/.env >/dev/null",
+              "fi",
+              "grep -q \"^APP_PORT=\" /opt/hellocity-ai/.env || echo \"APP_PORT=8000\" | sudo tee -a /opt/hellocity-ai/.env >/dev/null",
+              "grep -q \"^CELERY_BROKER_URL=\" /opt/hellocity-ai/.env || echo \"CELERY_BROKER_URL=redis://hc-redis:6379/0\" | sudo tee -a /opt/hellocity-ai/.env >/dev/null",
+              "grep -q \"^CELERY_RESULT_BACKEND=\" /opt/hellocity-ai/.env || echo \"CELERY_RESULT_BACKEND=redis://hc-redis:6379/0\" | sudo tee -a /opt/hellocity-ai/.env >/dev/null",
+
+              "# 1.5) Create Docker network if not exists",
+              "sudo docker network inspect hellocity-net >/dev/null 2>&1 || sudo docker network create hellocity-net",
+
+              "# 2) ECR login & pull",
+              "aws ecr get-login-password --region ap-southeast-2 | sudo docker login --username AWS --password-stdin '"${{ steps.ecr.outputs.registry }}"'",
+              "sudo docker pull '"${{ steps.img.outputs.image_sha }}"' || true",
+              "sudo docker pull '"${{ steps.img.outputs.image_latest }}"' || true",
+
+              "# 3) Pick the image (prefer exact SHA)",
+              "IMG='"${{ steps.img.outputs.image_sha }}"'",
+              "if ! sudo docker image inspect \"$IMG\" >/dev/null 2>&1; then IMG='"${{ steps.img.outputs.image_latest }}"'; fi",
+              "echo Using image: $IMG",
+
+              "# 3.5) Ensure Redis is running with persistent volume and correct network alias",
+              "sudo mkdir -p /opt/hellocity-ai/redis-data",
+              "if sudo docker ps -a --filter name=hc-redis --format \"{{.Names}}\" | grep -q \"^hc-redis$\"; then",
+              "  echo Checking Redis container network configuration",
+              "  REDIS_ALIASES=$(sudo docker inspect hc-redis --format '\''{{range $net, $conf := .NetworkSettings.Networks}}{{range $conf.Aliases}}{{.}} {{end}}{{end}}'\'' 2>/dev/null || echo '\'''\'')",
+              "  if echo \"$REDIS_ALIASES\" | grep -qw 'redis'; then",
+              "    echo Redis container has correct network alias, starting it",
+              "    sudo docker start hc-redis 2>/dev/null || true",
+              "  else",
+              "    echo Redis container missing 'redis' network alias, recreating it",
+              "    sudo docker rm -f hc-redis || true",
+              "    sudo docker run -d --name hc-redis --network hellocity-net --network-alias redis --restart unless-stopped -v /opt/hellocity-ai/redis-data:/data -p 6379:6379 redis:7-alpine redis-server --appendonly yes",
+              "  fi",
+              "else",
+              "  echo Creating Redis with persistent volume",
+              "  sudo docker run -d --name hc-redis --network hellocity-net --network-alias redis --restart unless-stopped -v /opt/hellocity-ai/redis-data:/data -p 6379:6379 redis:7-alpine redis-server --appendonly yes",
+              "fi",
+              "sleep 2 && (sudo docker exec hc-redis redis-cli ping || echo Redis ping failed)",
+
+              "# 4) Stop existing containers",
+              "sudo docker rm -f ${CONTAINER_API_NAME:-hellocity-ai-api} || true",
+              "sudo docker rm -f ${CONTAINER_WORKER_NAME:-hellocity-ai-worker} || true",
+
+              "# 5) Run AI API container on host :8080 -> container :8000 (connected to hellocity-net)",
+              "sudo docker run -d --name ${CONTAINER_API_NAME:-hellocity-ai-api} --network hellocity-net --restart unless-stopped --env-file /opt/hellocity-ai/.env -p ${HOST_PORT:-8080}:${APP_PORT:-8000} \"$IMG\" uvicorn app.api.main:app --host 0.0.0.0 --port ${APP_PORT:-8000}",
+
+              "# 6) Run Celery worker (no ports, connected to hellocity-net)",
+              "sudo docker run -d --name ${CONTAINER_WORKER_NAME:-hellocity-ai-worker} --network hellocity-net --restart unless-stopped --env-file /opt/hellocity-ai/.env \"$IMG\" bash -lc '\''celery -A app.api.tasks worker --loglevel=info --pool=solo'\''",
+
+              "# 7) Health check AI API on :8080",
+              "SUCCESS=false",
+              "for i in $(seq 1 15); do",
+              "  if code=$(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:${HOST_PORT:-8080}/docs 2>/dev/null) && [ \"$code\" = \"200\" ]; then",
+              "    echo \"Health check passed (attempt $i)\"",
+              "    SUCCESS=true",
+              "    break",
+              "  fi",
+              "  echo \"Health check failed: $code (attempt $i/15)\"",
+              "  sleep 4",
+              "done",
+              "if [ \"$SUCCESS\" != \"true\" ]; then",
+              "  echo \"=== AI API logs ===\"",
+              "  sudo docker logs --tail=200 ${CONTAINER_API_NAME:-hellocity-ai-api}",
+              "  exit 1",
+              "fi",
+
+              "# 8) Cleanup and show status",
+              "sudo docker container prune -f || true",
+              "sudo docker image prune -f || true",
+              "sudo docker ps --format \"table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}\" | grep -E \"hellocity-ai-api|hellocity-ai-worker|hc-redis\" || true"
+            ]' \
+            --output text
