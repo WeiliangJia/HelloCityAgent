@@ -1,4 +1,3 @@
-from functools import lru_cache
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.chains import RetrievalQA
@@ -33,6 +32,20 @@ def get_llm_checklist() -> ChatOpenAI:
     settings = get_settings()
     print(f"[DEBUG-LLM] Creating ChatOpenAI (checklist) with model: {settings.llm_model_checklist}")
     return ChatOpenAI(model=settings.llm_model_checklist, streaming=True)
+
+
+def get_llm_judge() -> ChatOpenAI:
+    """Specialized LLM for lightweight routing/decision making"""
+    settings = get_settings()
+    print(f"[DEBUG-LLM] Creating ChatOpenAI (judge) with model: {settings.llm_model_judge}")
+    return ChatOpenAI(model=settings.llm_model_judge, streaming=False)
+
+
+def get_llm_summary() -> ChatOpenAI:
+    """Dedicated LLM for summarizing search and pricing results"""
+    settings = get_settings()
+    print(f"[DEBUG-LLM] Creating ChatOpenAI (summary) with model: {settings.llm_model_summary}")
+    return ChatOpenAI(model=settings.llm_model_summary, streaming=False)
 
 
 def get_qa_chain() -> RetrievalQA:
