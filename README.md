@@ -2,7 +2,7 @@
 
 # HelloCity AI Service
 
-A FastAPI-based AI service powered by LangChain and LangGraph, providing intelligent chat functionality with conversation memory, checklist generation, and SSE streaming for the HelloCity relocation assistant platform.
+A FastAPI-based AI service powered by LangChain and LangGraph, providing intelligent chat functionality with conversation memory, live flight/hotel price search, checklist generation, and SSE streaming for the HelloCity relocation assistant platform.
 
 ## 📋 Table of Contents
 
@@ -29,33 +29,50 @@ A FastAPI-based AI service powered by LangChain and LangGraph, providing intelli
 
 ### Recommended: Local Development (Fastest)
 
-1. **Install dependencies:**
+1. **Create & activate virtual environment (recommended):**
+   ```bash
+   python -m venv .venv
+   # Windows PowerShell
+   .\.venv\Scripts\Activate.ps1
+   # macOS/Linux
+   source .venv/bin/activate
+   ```
+
+2. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
 
-2. **Create environment file:**
+3. **Create environment file:**
    ```bash
    cp .env.example .env.local
-   # Edit .env.local with your OpenAI API key
+   # Edit .env.local with your API keys and model choices
    ```
 
-3. **Start Redis (required for Celery):**
+4. **Start Redis (required for Celery checklist flow):**
    ```bash
    docker compose up -d redis
    ```
 
-4. **Start Celery worker:**
+5. **Start Celery worker (new terminal with virtualenv activated):**
    ```bash
-   celery -A app.api.tasks worker --loglevel=info --pool=solo
+   celery -A app.api.tasks.celery_app worker --loglevel=info --pool=solo
    ```
 
-5. **Run development server:**
+6. **Run development server (another terminal with virtualenv activated):**
    ```bash
-   uvicorn app.main:app --reload
+   uvicorn app.api.main:app --reload --port 8000
    ```
 
-6. **Access API:** http://localhost:8000
+7. **Access API:** http://localhost:8000
+
+8. **Smoke test chat endpoint (streams SSE to your terminal):**
+   ```bash
+   curl -N -X POST "http://localhost:8000/chat/test-session" ^
+     -H "Content-Type: application/json" ^
+     -d "{\"messages\":[{\"role\":\"user\",\"content\":\"Find me flights from Shanghai to Tokyo next month\"}]}"
+   ```
+   *(Use `\` continuation on macOS/Linux instead of `^`.)*
 
 **Why Local Over Docker?**
 - ✅ Faster hot-reload (no container rebuild)
@@ -90,10 +107,13 @@ Populate `.env.local` with actual values:
 ```bash
 # Required: OpenAI Configuration
 OPENAI_API_KEY=sk-...
+TAVILY_API_KEY=tvly-...         # Required for flight/hotel price search
 
 # Dual Model Strategy (recommended for cost/performance optimization)
 LLM_MODEL_CHAT=gpt-4o-mini       # Fast model for conversation
 LLM_MODEL_CHECKLIST=gpt-4o-mini  # High-quality model for checklist generation
+LLM_MODEL_JUDGE=gpt-4o-mini      # Lightweight router model (falls back to CHAT if unset)
+LLM_MODEL_SUMMARY=gpt-4o-mini    # High-quality model for price summaries
 LLM_MODEL=gpt-4o-mini            # Fallback for backward compatibility
 
 # Required: Celery/Redis (auto-configured for Docker Compose)
@@ -102,6 +122,8 @@ CELERY_RESULT_BACKEND=redis://localhost:6379/0
 
 # Optional: Logging Level
 LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR
+ENABLE_WEB_SEARCH=true
+ENABLE_RAG=true
 ```
 
 ### Important Configuration Notes
@@ -111,6 +133,11 @@ LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR
 - Configured in `app/api/tasks.py`: `celery_app.conf.result_expires = 3600`
 - Prevents Redis OOM by removing completed checklist generation results
 - Frontend polls for max 5 minutes, so 1 hour provides ample buffer for page refreshes and network delays
+
+**Web Search & Pricing Agents:**
+- Set `TAVILY_API_KEY` to enable the new flight/hotel price search flow
+- Toggle behaviour with `ENABLE_WEB_SEARCH` and `ENABLE_RAG` in `.env.local`
+- Judge and summary agents fall back to chat/checklist models when dedicated model env vars are omitted
 
 **Dynamic Model Changes:**
 - Simply edit `.env.local` and restart: `docker compose restart api celery`
@@ -138,6 +165,9 @@ Streams AI responses via Server-Sent Events (SSE). Accepts full conversation his
 
 **Response**: SSE stream with events:
 - `text-delta` - Token chunks from AI
+- `agent-decision` - Router decision (chat vs RAG vs web search)
+- `search-results` - Raw Tavily results for flight/hotel pricing
+- `price-summary` - Structured summary of discovered prices
 - `task-id` - Celery task ID for checklist generation
 - `data-checklist-pending` - Checklist generation started
 - `data-checklist-banner` - Temporary placeholder
@@ -192,9 +222,12 @@ Check the status of a background Celery task (e.g., checklist generation).
 
 ### Multi-Agent Architecture
 - **Chatbot Agent**: Conversational interviewer with tool calling
+- **Judge Agent**: Routes each turn between chat, RAG, or price search
+- **RAG Agent**: Answers with internal Chroma knowledge base
 - **Checklist Generator**: Creates structured task lists
 - **Checklist Converter**: Extracts metadata (city, dates, stay type)
-- **Web Search Agent**: Confidence-based retry mechanism with Tavily integration
+- **Web Search Agent**: Single-shot Tavily integration for live data
+- **Price Summary Agent**: Distills flight/hotel quotes into actionable advice
 - **LangGraph Orchestration**: State machine routes between agents (recursion_limit=50)
 
 ### Token-Level Streaming
@@ -217,6 +250,7 @@ Check the status of a background Celery task (e.g., checklist generation).
 - [LangChain](https://python.langchain.com/) - LLM framework with tool support
 - [LangGraph](https://langchain-ai.github.io/langgraph/) - Multi-agent state machine orchestration
 - [OpenAI](https://openai.com/) - GPT model provider (gpt-4o-mini, gpt-5-chat)
+- [Tavily](https://tavily.com/) - Web search API for live pricing data
 - [Pydantic](https://docs.pydantic.dev/) - Data validation and settings management
 
 ### Background Processing
@@ -243,10 +277,10 @@ docker compose up -d
 docker compose up -d redis
 
 # Start API server (local)
-uvicorn app.main:app --reload
+uvicorn app.api.main:app --reload --port 8000
 
 # Start Celery worker (local)
-celery -A app.api.tasks worker --loglevel=info --pool=solo
+celery -A app.api.tasks.celery_app worker --loglevel=info --pool=solo
 ```
 
 ### View Logs
@@ -300,7 +334,7 @@ Python AI Service (FastAPI + LangGraph)
   ↓ OpenAI API (streaming)
   ↓ LangChain tool: trigger_checklist_generation
   ↓ Celery background task (15-30s)
-  ↓ SSE: data-checklist event
+  ↓ SSE: agent-decision -> search-results -> price-summary -> data-checklist
 .NET Backend (ChecklistService)
   ↓ Parse and persist to PostgreSQL
 Frontend
@@ -476,17 +510,17 @@ curl -X GET "http://localhost:8000/tasks/abc-123-def-456"
 **Last Updated**: 2025-01-14
 
 **Recent Improvements**:
-- ✅ Stateless architecture (removed server-side session caching)
-- ✅ Dual model strategy (separate models for chat vs checklist)
-- ✅ Hot-reload configuration (removed all caching for dynamic model changes)
-- ✅ Websearch agent with confidence-based retry mechanism (recursion_limit=50)
-- ✅ Dependency injection refactoring (`app.state` → dependency providers)
-- ✅ Service layer extraction (business logic separated from HTTP)
-- ✅ Function decomposition (reduced complexity)
-- ✅ Structured output for checklists (`with_structured_output()`)
-- ✅ Async task streaming with `task-id` SSE events
-- ✅ Celery result expiration (1 hour TTL to prevent Redis OOM)
-
+- Stateless architecture (removed server-side session caching)
+- Dual model strategy (separate models for chat vs checklist)
+- Multi-agent routing with judge/RAG/web-search & pricing summary
+- Hot-reload configuration (removed all caching for dynamic model changes)
+- Tavily web search integration with structured pricing output
+- Dependency injection refactoring (`app.state` -> dependency providers)
+- Service layer extraction (business logic separated from HTTP)
+- Function decomposition (reduced complexity)
+- Structured output for checklists (`with_structured_output()`)
+- Async task streaming with `task-id` SSE events
+- Celery result expiration (1 hour TTL to prevent Redis OOM)
 **See CLAUDE.md** for detailed architecture documentation and integration guides.
 
 ---
