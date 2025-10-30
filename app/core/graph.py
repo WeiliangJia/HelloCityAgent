@@ -1,15 +1,161 @@
 from langgraph.graph import StateGraph, START, END
+from langchain_core.messages import AIMessage
+
 from ..models.schemas import RouterState
 from .hooks import checkpointer
-from ..agents import create_chatbot_agent, create_websearch_agent, create_checklist_generator_agent, create_checklist_converter_agent
-from ..config.dependencies import get_llm, get_llm_chat, get_llm_checklist, get_qa_chain
+from ..agents import (
+    create_chatbot_agent,
+    create_websearch_agent,
+    create_checklist_generator_agent,
+    create_checklist_converter_agent,
+    create_rag_agent,
+    create_judge_agent,
+    create_summary_agent,
+)
+from ..config.dependencies import (
+    get_llm,
+    get_llm_chat,
+    get_llm_checklist,
+    get_qa_chain,
+    get_llm_judge,
+    get_llm_summary,
+)
+from ..config.settings import get_settings
 from ..utils.logger import setup_logging
+from ..utils.tools import make_search_tool
 import os
 import re
 import json
 
 # Initialize logger
 logger = setup_logging(log_level=os.getenv("LOG_LEVEL", "INFO"))
+
+
+def judge_wrapper(agent):
+    """Wrapper for the judge agent with robust fallback behaviour."""
+
+    def judge_node(state):
+        logger.debug("Judge agent evaluating next action")
+        try:
+            result = agent.invoke(state)
+            decision = (result or {}).get("agent_decision") or {}
+
+            logger.info(
+                "Judge decision completed",
+                extra={
+                    "action": decision.get("action"),
+                    "confidence": decision.get("confidence"),
+                },
+            )
+
+            return {
+                "messages": result.get("messages", state.get("messages", [])),
+                "agent_decision": decision,
+                "search_results": None,
+                "price_summary": None,
+            }
+        except Exception as exc:
+            logger.error("Judge agent failed, defaulting to chatbot", exc_info=True)
+            fallback_decision = {
+                "action": "chat",
+                "reason": f"Judge error: {type(exc).__name__}",
+                "confidence": 0.0,
+                "search_query": None,
+                "followups": [],
+            }
+            return {
+                "messages": state.get("messages", []),
+                "agent_decision": fallback_decision,
+                "search_results": None,
+                "price_summary": None,
+            }
+
+    return judge_node
+
+
+def price_search_wrapper(agent_state):
+    """Wrapper that runs a single Tavily search for price discovery."""
+
+    def price_search_node(state):
+        decision = (state.get("agent_decision") or {})
+        query = (decision or {}).get("search_query")
+
+        if not agent_state.settings.enable_web_search:
+            logger.info("Web search disabled via settings; skipping search node")
+            return {
+                "messages": state.get("messages", []),
+                "agent_decision": decision,
+                "search_results": None,
+            }
+
+        if not agent_state.price_search_tool:
+            logger.warning("Price search tool unavailable, skipping search execution")
+            return {
+                "messages": state.get("messages", []),
+                "agent_decision": decision,
+                "search_results": None,
+            }
+
+        if not query:
+            logger.warning("Judge did not provide search query; falling back to chatbot path")
+            return {
+                "messages": state.get("messages", []),
+                "agent_decision": decision,
+                "search_results": None,
+            }
+
+        try:
+            logger.info("Executing price search", extra={"query": query})
+            search_results = agent_state.price_search_tool.func(query)
+            return {
+                "messages": state.get("messages", []),
+                "agent_decision": decision,
+                "search_results": search_results,
+            }
+        except Exception:
+            logger.error("Price search failed", exc_info=True)
+            return {
+                "messages": state.get("messages", []),
+                "agent_decision": decision,
+                "search_results": {
+                    "error": "Web search failed",
+                    "query": query,
+                },
+            }
+
+    return price_search_node
+
+
+def summary_wrapper(agent):
+    """Wrapper to convert search results into a conversational response."""
+
+    def summary_node(state):
+        logger.debug("Summary agent started")
+        try:
+            result = agent.invoke(state)
+            logger.info("Summary agent completed")
+            return result
+        except Exception:
+            logger.error("Summary agent failed", exc_info=True)
+            fallback_text = "I was unable to summarize the latest pricing results. Please try refining the dates or destination."
+            messages = list(state.get("messages", []))
+            messages.append(AIMessage(content=fallback_text))
+            return {
+                "messages": messages,
+                "agent_decision": state.get("agent_decision"),
+                "search_results": state.get("search_results"),
+                "price_summary": {
+                    "reply": fallback_text,
+                    "key_points": [],
+                    "price_quotes": [],
+                    "price_range": None,
+                    "recommendation": None,
+                    "caution": "Summary agent failed to parse search results.",
+                },
+                "conversation_summary": fallback_text,
+            }
+
+    return summary_node
 
 
 def websearch_wrapper(agent):
@@ -189,21 +335,74 @@ def checklist_converter_wrapper(agent):
 class AgentState:
     """Container for agent instances (mimics old app.state interface)"""
     def __init__(self, llm=None):
+        self.settings = get_settings()
         self.llm = llm or get_llm()
+        self.llm_judge = get_llm_judge()
+        self.llm_summary = get_llm_summary()
         self.qa_chain = get_qa_chain()
+
         self.chatbot = create_chatbot_agent(self)
+        self.rag_agent = create_rag_agent(self)
+        self.judge_agent = create_judge_agent(self)
+        self.summary_agent = create_summary_agent(self)
         self.websearch_agent = create_websearch_agent(self)
         self.checklist_generator = create_checklist_generator_agent(self)
         self.checklist_converter = create_checklist_converter_agent(self)
+
+        self.price_search_tool = None
+        if self.settings.enable_web_search:
+            try:
+                self.price_search_tool = make_search_tool()
+            except Exception as exc:
+                logger.warning("Failed to initialize Tavily search tool", exc_info=True)
 
 
 def get_router_graph_chat():
     """Chat graph instance (uses GPT-4o-mini for fast responses, cache removed to pick up LLM changes)"""
     agent_state = AgentState(llm=get_llm_chat())
     graph = StateGraph(RouterState)
+
+    graph.add_node("judge", judge_wrapper(agent_state.judge_agent))
     graph.add_node("chatbot", agent_state.chatbot)
-    graph.add_edge(START, "chatbot")
+    graph.add_node("rag_agent", agent_state.rag_agent)
+    graph.add_node("price_search", price_search_wrapper(agent_state))
+    graph.add_node("summary_agent", summary_wrapper(agent_state.summary_agent))
+
+    graph.add_edge(START, "judge")
+
+    def _route_after_judge(state):
+        decision = (state.get("agent_decision") or {}).get("action", "chat")
+        mapping = {
+            "chat": "chatbot",
+            "rag": "rag_agent",
+            "search_flight": "price_search",
+            "search_hotel": "price_search",
+            "search_general": "price_search",
+        }
+        next_node = mapping.get(decision, "chatbot")
+
+        if next_node == "rag_agent" and agent_state.rag_agent is None:
+            next_node = "chatbot"
+        if next_node == "price_search" and agent_state.price_search_tool is None:
+            next_node = "chatbot"
+
+        return next_node
+
+    graph.add_conditional_edges(
+        "judge",
+        _route_after_judge,
+        {
+            "chatbot": "chatbot",
+            "rag_agent": "rag_agent",
+            "price_search": "price_search",
+        },
+    )
+
     graph.add_edge("chatbot", END)
+    graph.add_edge("rag_agent", END)
+    graph.add_edge("price_search", "summary_agent")
+    graph.add_edge("summary_agent", END)
+
     return graph.compile(checkpointer=checkpointer)
 
 
