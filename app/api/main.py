@@ -143,6 +143,60 @@ async def chat_stream(
                         }) + "\n\n"
                         await asyncio.sleep(0)
 
+                elif event_type == "on_node_end":
+                    output_payload = (event.get("data") or {}).get("output") or {}
+
+                    if node_name == "judge":
+                        decision_payload = output_payload.get("agent_decision")
+                        if decision_payload:
+                            logger.debug("Judge decision payload ready", extra={
+                                "correlation_id": correlation_id,
+                                "session_id": session_id,
+                                "action": decision_payload.get("action"),
+                                "confidence": decision_payload.get("confidence")
+                            })
+                            yield "data:" + json.dumps({
+                                'type': 'agent-decision',
+                                'data': decision_payload
+                            }) + "\n\n"
+
+                    elif node_name == "price_search":
+                        search_payload = output_payload.get("search_results")
+                        if search_payload:
+                            logger.debug("Search results payload ready", extra={
+                                "correlation_id": correlation_id,
+                                "session_id": session_id
+                            })
+                            yield "data:" + json.dumps({
+                                'type': 'search-results',
+                                'data': search_payload
+                            }, ensure_ascii=False) + "\n\n"
+
+                    elif node_name == "summary_agent":
+                        price_summary = output_payload.get("price_summary")
+                        summary_text = output_payload.get("conversation_summary")
+
+                        if price_summary:
+                            yield "data:" + json.dumps({
+                                'type': 'price-summary',
+                                'data': price_summary
+                            }, ensure_ascii=False) + "\n\n"
+
+                        if summary_text:
+                            logger.debug("Summary text ready", extra={
+                                "correlation_id": correlation_id,
+                                "session_id": session_id,
+                                "length": len(summary_text)
+                            })
+                            yield "data:" + json.dumps({
+                                'type': 'text-delta',
+                                'delta': summary_text
+                            }) + "\n\n"
+                            yield "data:" + json.dumps({
+                                'type': 'text-complete',
+                                'content': summary_text
+                            }) + "\n\n"
+
                 # Tool call detection
                 elif event_type == "on_chat_model_end":
                     output = event["data"]["output"]
