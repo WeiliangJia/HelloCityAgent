@@ -39,3 +39,8 @@ class RouterState(TypedDict):
     generated_checklist: Optional[dict]
     websearch_confidence: Optional[float]
     websearch_retry_count: Optional[int]
+    agent_decision: Optional[str]
+    rag_sources: Optional[list]
+    search_results: Optional[list]
+    conversation_summary: Optional[str]
+    price_summary: Optional[dict]
