@@ -1,6 +1,15 @@
 from langchain.agents import Tool
 from langchain_tavily import TavilySearch
-import os 
+import os
+from typing import Any, Dict
+
+
+def _ensure_tavily() -> TavilySearch:
+    api_key = os.environ.get("TAVILY_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing TAVILY_API_KEY environment variable for Tavily search.")
+    return TavilySearch(api_key=api_key)
+
 
 def make_qa_tool(qa_chain):
     return Tool(
@@ -9,11 +18,21 @@ def make_qa_tool(qa_chain):
         description="Answer questions based on documents in Chroma"
     )
 
+
 def make_search_tool():
-    tavily_tool = TavilySearch(api_key=os.environ["TAVILY_API_KEY"])
+    tavily_tool = _ensure_tavily()
+
+    def _search(query: str) -> Dict[str, Any]:
+        response = tavily_tool.invoke({
+            "query": query,
+            "search_depth": "advanced",
+            "include_raw_content": True,
+            "max_results": 5,
+        })
+        return response
+
     return Tool(
         name="SearchSystem",
-        func=lambda q: str(tavily_tool.invoke({"query": q})),
-        description="Search answers on the web using Tavily"
+        func=_search,
+        description="Perform a focused web search (flights, hotels, pricing) and return structured JSON."
     )
-    
