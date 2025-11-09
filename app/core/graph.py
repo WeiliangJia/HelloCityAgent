@@ -11,6 +11,7 @@ from ..agents import (
     create_rag_agent,
     create_judge_agent,
     create_summary_agent,
+    create_supervisor_agent,
 )
 from ..config.dependencies import (
     get_llm,
@@ -156,6 +157,26 @@ def summary_wrapper(agent):
             }
 
     return summary_node
+
+
+def supervisor_wrapper(agent):
+    """Wrapper to run supervisor reflection and keep flow resilient."""
+
+    def supervisor_node(state):
+        try:
+            if agent is None:
+                return state
+            result = agent.invoke(state)
+            merged = dict(state or {})
+            merged.update(result or {})
+            return merged
+        except Exception:
+            logger.error("Supervisor agent failed; skipping", exc_info=True)
+            merged = dict(state or {})
+            merged["supervisor_feedback"] = "Supervisor error; skipped."
+            return merged
+
+    return supervisor_node
 
 
 def websearch_wrapper(agent):
@@ -345,6 +366,8 @@ class AgentState:
         self.rag_agent = create_rag_agent(self)
         self.judge_agent = create_judge_agent(self)
         self.summary_agent = create_summary_agent(self)
+        # Optional supervisor agent (self-reflection)
+        self.supervisor_agent = create_supervisor_agent(self) if self.settings.enable_supervisor else None
         self.websearch_agent = create_websearch_agent(self)
         self.checklist_generator = create_checklist_generator_agent(self)
         self.checklist_converter = create_checklist_converter_agent(self)
@@ -355,6 +378,12 @@ class AgentState:
                 self.price_search_tool = make_search_tool()
             except Exception as exc:
                 logger.warning("Failed to initialize Tavily search tool", exc_info=True)
+        # Initialize supervisor after other agents so it can reflect on outputs
+        if not hasattr(self, "supervisor_agent"):
+            try:
+                self.supervisor_agent = create_supervisor_agent(self) if self.settings.enable_supervisor else None
+            except Exception:
+                logger.warning("Supervisor agent initialization failed; continuing without it")
 
 
 def get_router_graph_chat():
@@ -367,6 +396,7 @@ def get_router_graph_chat():
     graph.add_node("rag_agent", agent_state.rag_agent)
     graph.add_node("price_search", price_search_wrapper(agent_state))
     graph.add_node("summary_agent", summary_wrapper(agent_state.summary_agent))
+    graph.add_node("supervisor_agent", supervisor_wrapper(agent_state.supervisor_agent))
 
     graph.add_edge(START, "judge")
 
@@ -398,10 +428,17 @@ def get_router_graph_chat():
         },
     )
 
-    graph.add_edge("chatbot", END)
-    graph.add_edge("rag_agent", END)
-    graph.add_edge("price_search", "summary_agent")
-    graph.add_edge("summary_agent", END)
+    if agent_state.settings.enable_supervisor:
+        graph.add_edge("chatbot", "supervisor_agent")
+        graph.add_edge("rag_agent", "supervisor_agent")
+        graph.add_edge("price_search", "summary_agent")
+        graph.add_edge("summary_agent", "supervisor_agent")
+        graph.add_edge("supervisor_agent", END)
+    else:
+        graph.add_edge("chatbot", END)
+        graph.add_edge("rag_agent", END)
+        graph.add_edge("price_search", "summary_agent")
+        graph.add_edge("summary_agent", END)
 
     return graph.compile(checkpointer=checkpointer)
 
