@@ -44,3 +44,5 @@ class RouterState(TypedDict):
     search_results: Optional[list]
     conversation_summary: Optional[str]
     price_summary: Optional[dict]
+    supervisor_feedback: Optional[str]
+    supervisor_revision: Optional[str]
