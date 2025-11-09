@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     chroma_persist_directory: str = "./chroma_db"
     enable_rag: bool = True
     enable_web_search: bool = True
+    ENABLE_SUPERVISOR: bool = True
 
     @model_validator(mode='after')
     def set_model_defaults(self):
@@ -53,6 +54,11 @@ class Settings(BaseSettings):
             print(f"[CONFIG] llm_model_summary not set, using llm_model_checklist: {self.llm_model_summary}")
 
         return self
+
+    # Convenience property for consistency with other flags
+    @property
+    def enable_supervisor(self) -> bool:
+        return bool(self.ENABLE_SUPERVISOR)
 
 
 def get_settings() -> Settings:
