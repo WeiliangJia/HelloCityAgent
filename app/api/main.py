@@ -196,6 +196,26 @@ async def chat_stream(
                                 'type': 'text-complete',
                                 'content': summary_text
                             }) + "\n\n"
+                    elif node_name == "supervisor_agent":
+                        supervisor_feedback = output_payload.get("supervisor_feedback")
+                        supervisor_revision = output_payload.get("supervisor_revision")
+
+                        if supervisor_revision:
+                            # Prefer revised reply as final content delta
+                            yield "data:" + json.dumps({
+                                'type': 'text-delta',
+                                'delta': supervisor_revision
+                            }, ensure_ascii=False) + "\n\n"
+                            yield "data:" + json.dumps({
+                                'type': 'text-complete',
+                                'content': supervisor_revision
+                            }, ensure_ascii=False) + "\n\n"
+                        elif supervisor_feedback:
+                            # Surface supervisor notes for the client to optionally display
+                            yield "data:" + json.dumps({
+                                'type': 'supervisor-feedback',
+                                'data': supervisor_feedback
+                            }, ensure_ascii=False) + "\n\n"
 
                 # Tool call detection
                 elif event_type == "on_chat_model_end":
