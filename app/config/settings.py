@@ -13,8 +13,16 @@ class Settings(BaseSettings):
     )
 
     # OpenAI Configuration
-    openai_api_key: str
+    openai_api_key: Optional[str] = None
     llm_model: str = "gpt-5-mini"  # Fallback for backward compatibility
+    embeddings_model: str = "text-embedding-3-small"
+
+    # Azure OpenAI Configuration
+    azure_openai_api_key: Optional[str] = None
+    azure_openai_endpoint: Optional[str] = None
+    azure_openai_api_version: str = "2024-02-15-preview"
+    azure_openai_chat_deployment: Optional[str] = None
+    azure_openai_embeddings_deployment: Optional[str] = None
 
     # Dual Model Strategy (Chat vs Checklist)
     llm_model_chat: Optional[str] = None           # Fast model for conversation
@@ -53,12 +61,30 @@ class Settings(BaseSettings):
             self.llm_model_summary = self.llm_model_checklist or self.llm_model
             print(f"[CONFIG] llm_model_summary not set, using llm_model_checklist: {self.llm_model_summary}")
 
+        if not self.openai_api_key and not self.azure_openai_api_key:
+            raise ValueError(
+                "Set OPENAI_API_KEY or AZURE_OPENAI_API_KEY in .env.local (at least one is required)."
+            )
+
+        if self.azure_openai_api_key and not self.azure_openai_endpoint:
+            raise ValueError("AZURE_OPENAI_ENDPOINT is required when using Azure OpenAI.")
+
         return self
 
     # Convenience property for consistency with other flags
     @property
     def enable_supervisor(self) -> bool:
         return bool(self.ENABLE_SUPERVISOR)
+
+    @property
+    def use_azure_openai(self) -> bool:
+        """Azure OpenAI is active if an endpoint is provided."""
+        return bool(self.azure_openai_endpoint)
+
+    @property
+    def resolved_api_key(self) -> Optional[str]:
+        """Prefer the Azure key when Azure is enabled, otherwise default OpenAI key."""
+        return self.azure_openai_api_key or self.openai_api_key
 
 
 def get_settings() -> Settings:
