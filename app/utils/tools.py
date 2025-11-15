@@ -1,4 +1,4 @@
-from langchain.agents import Tool
+from langchain_core.tools import Tool
 from langchain_tavily import TavilySearch
 import os
 from typing import Any, Dict
