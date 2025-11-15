@@ -7,7 +7,7 @@ import asyncio
 import time
 import os
 import uuid
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 
 from ..models.schemas import AskRequest, GenerateTitleRequest, GenerateTitleResponse
 from ..core.graph import get_router_graph_chat
@@ -424,7 +424,7 @@ async def chat_stream(
 @app.post("/generate-title")
 async def generate_title(
     request: GenerateTitleRequest,
-    llm: ChatOpenAI = Depends(get_llm_chat)  # Use fast GPT-4o for title generation
+    llm: BaseChatModel = Depends(get_llm_chat)  # Use fast GPT-4o for title generation
 ) -> GenerateTitleResponse:
     """
     Generate conversation title based on user's first message
