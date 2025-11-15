@@ -28,8 +28,13 @@ A FastAPI-based AI service powered by LangChain and LangGraph, providing intelli
 
 ### Recommended: Local Development (Fastest)
 
-1. **Install dependencies:**
+1. **Create & activate virtual environment (recommended):**
    ```bash
+   python -m venv .venv
+   # macOS/Linux
+   source .venv/bin/activate
+   # Windows (PowerShell)
+   .\.venv\Scripts\Activate
    pip install -r requirements.txt
    ```
 
@@ -51,7 +56,7 @@ A FastAPI-based AI service powered by LangChain and LangGraph, providing intelli
 
 5. **Run development server:**
    ```bash
-   uvicorn app.main:app --reload
+   uvicorn app.api.main:app --reload
    ```
 
 6. **Access API:** http://localhost:8000
@@ -72,6 +77,17 @@ docker compose up -d
 
 This starts Redis, API server (port 8000), and Celery worker.
 
+### Terminal Chat (CLI)
+
+Use the bundled CLI tool for quick local conversations (including Tavily web search when `TAVILY_API_KEY` is present):
+
+```bash
+# Activate your virtualenv first, then run:
+python cli_chat.py --stream
+```
+
+The script auto-loads `.env.local`; set either `OPENAI_API_KEY` or the Azure OpenAI variables plus `TAVILY_API_KEY` before running. For checklist generation and other background tasks, keep Redis + Celery running (`docker compose up redis` and `celery -A app.api.tasks worker --loglevel=info`). Use `/reset` to clear history or `/quit` to exit.
+
 ## 3. Environment Configuration
 
 **Required:** Create `.env.local` file in the project root:
@@ -89,6 +105,13 @@ Populate `.env.local` with actual values:
 ```bash
 # Required: OpenAI Configuration
 OPENAI_API_KEY=sk-...
+
+# Optional: Azure OpenAI (set all of these to route traffic through Azure)
+AZURE_OPENAI_API_KEY=azure-...
+AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
+AZURE_OPENAI_API_VERSION=2024-02-15-preview
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o-mini
+AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT=text-embedding-3-small
 
 # Dual Model Strategy (recommended for cost/performance optimization)
 LLM_MODEL_CHAT=gpt-4o-mini       # Fast model for conversation
@@ -114,6 +137,7 @@ LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR
 **Dynamic Model Changes:**
 - Simply edit `.env.local` and restart: `docker compose restart api celery`
 - No caching ensures changes take effect immediately
+- When Azure variables are present, the backend automatically instantiates `AzureChatOpenAI`/`AzureOpenAIEmbeddings`; omit them to keep calling `api.openai.com`
 
 **Never commit `.env.local` to version control!**
 
