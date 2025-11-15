@@ -83,8 +83,8 @@ def main():
     args = parser.parse_args()
 
     # Helpful hints
-    if not os.environ.get("OPENAI_API_KEY"):
-        print("[WARN] OPENAI_API_KEY is not set. Set it in .env.local or environment.")
+    if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("AZURE_OPENAI_API_KEY")):
+        print("[WARN] Neither OPENAI_API_KEY nor AZURE_OPENAI_API_KEY is set. Update .env.local before running.")
 
     try:
         asyncio.run(run_chat(args.session, args.stream))
@@ -94,4 +94,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
