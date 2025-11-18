@@ -19,6 +19,8 @@ docker compose up -d
 # 启动终端对话
 python cli_chat.py --stream
 ```
+<img width="620" height="588" alt="图片3" src="https://github.com/user-attachments/assets/6264ebe4-80d2-4b54-828c-56c13bc34da7" />
+
 
 ### 0.3 环境变量
 复制模板并填写 Azure OpenAI 相关配置：
@@ -44,7 +46,7 @@ HelloCityAgent 面向跨国工作者、留学生、旅行者，解决出行落�
 - **配置与依赖注入**：`app/config/settings.py:6` 读取 `.env.local`（支持 OpenAI/Azure 多模型）；`app/config/dependencies.py:15` 构建聊天/清单/裁判/摘要模型、Chroma 向量库与简化 RetrievalQA。
 - **提示与代理实现**：`prompts/*.txt` 存放提示；`app/agents/` 内含聊天、搜索、清单生成/转换、裁判、RAG、总结、监督等 Agent，由 `AgentState` 注入 LangGraph 节点。
 
-## 1.2 运行流程（终端与接口共用同一图）
+## 1.2 运行流程
 - **终端入口**：`cli_chat.py:8-71` 加载 `.env.local`，循环读取输入，累积为 `HumanMessage/AIMessage` 历史，调用 `get_router_graph_chat().astream_events` 流式输出（或 `ainvoke` 单次返回）。
 - **主对话图**：`app/core/graph.py:35-210` 以 `judge` 起始；判决路由到 `chatbot`（默认聊天/工具调用）、`rag_agent`（RAG 检索）、`price_search`（需要 Tavily 查询）。搜索结果交给 `summary_agent` 再可选 `supervisor_agent` 反思；否则各节点直接回传。
 - **工具触发**：`app/agents/chatbot_agent.py:8-34` React Agent 暴露 `trigger_checklist_generation`（可选 QA 工具）。LLM 触发时事件中可见 tool call。
@@ -56,15 +58,17 @@ HelloCityAgent 面向跨国工作者、留学生、旅行者，解决出行落�
 ```bash
 python cli_chat.py --stream
 # 输入示例：
-<img width="808" height="695" alt="image" src="https://github.com/user-attachments/assets/f089a83d-58b1-41a5-8ebb-1acef54aad52" />
+终端输入：告诉我2025年12月22日墨尔本飞成都的最便宜单程机票，生成订票网页链接
+```
+<img width="1034" height="890" alt="图片1" src="https://github.com/user-attachments/assets/4c1a9c72-07d8-405d-ba77-6c39eeb90cd0" />
 
 # 代理会先判定是否需要搜索 -> 触发 Tavily -> 汇总价格 -> 可能触发 checklist 工具 -> 返回清单并流式文本
 # 进入输出链接
-<img width="865" height="533" alt="image" src="https://github.com/user-attachments/assets/c77b53df-080f-4f5c-83a5-785d47ab27a1" />
 
-```
-示例意图：生成机票搜索方案（会返回搜索摘要），随后触发 checklist，最终 SSE 内含 `data-checklist`。
+<img width="1107" height="682" alt="图片2" src="https://github.com/user-attachments/assets/3653b3c0-e72c-4a00-a40a-d8830cdb8a7f" />
+
+
 
 ## 3. 心得体会
-Agent/AIOps 工具链显著压缩了交付周期：过去中小型全栈项目需多人月，如今中级开发者借助 Codex/Claude/Cursor + Azure OpenAI 等，可在一周完成约 80% 工作。生态仍在快速演化（如 MCP 协议等），持续学习与适配新工具是开发者保持竞争力的关键。
+Agent/AIOps 工具链显著压缩了交付周期：过去，一个中小型全栈项目需要4人团队数月时间落地，如今一个中级开发者，借助AI辅助UI/UX设计工具 Codex/Claude/Cursor代码实现 + Azure OpenAI 等，可在一周完成约 80% 工作。生态仍在快速演化（如近期出现的 MCP 协议等），开发者需要适应并将AI工具投入使用。可以预见的是，在未来的数年中，更多的AI工具和概念将出现并投入生产，持续学习与适配新工具才是开发者保持竞争力的关键。
 
