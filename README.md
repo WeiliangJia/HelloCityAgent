@@ -8,12 +8,16 @@
 - VS Code + Codex 扩展（安装后在左侧出现 OpenAI 图标，需登录 OpenAI）
 - 公共 GitHub 仓库（新建空库后 `git remote set-url origin <your_repo>`）
 
-### 0.2 运行依赖
+### 0.2 运行依赖/启动项目
 ```bash
-<img width="484" height="459" alt="image" src="https://github.com/user-attachments/assets/ed8e9bef-f6f9-48c5-a3b2-b8070fab7109" />
+# 安装第三方库
+python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 
 # 启动基础服务（Redis/Celery/Api）
 docker compose up -d
+
+# 启动终端对话
+python cli_chat.py --stream
 ```
 
 ### 0.3 环境变量
