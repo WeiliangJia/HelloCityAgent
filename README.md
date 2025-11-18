@@ -10,7 +10,7 @@
 
 ### 0.2 运行依赖
 ```bash
-# <img width="484" height="459" alt="image" src="https://github.com/user-attachments/assets/ed8e9bef-f6f9-48c5-a3b2-b8070fab7109" />
+<img width="484" height="459" alt="image" src="https://github.com/user-attachments/assets/ed8e9bef-f6f9-48c5-a3b2-b8070fab7109" />
 
 # 启动基础服务（Redis/Celery/Api）
 docker compose up -d
@@ -52,11 +52,11 @@ HelloCityAgent 面向跨国工作者、留学生、旅行者，解决出行落�
 ```bash
 python cli_chat.py --stream
 # 输入示例：
-# <img width="808" height="695" alt="image" src="https://github.com/user-attachments/assets/f089a83d-58b1-41a5-8ebb-1acef54aad52" />
+<img width="808" height="695" alt="image" src="https://github.com/user-attachments/assets/f089a83d-58b1-41a5-8ebb-1acef54aad52" />
 
 # 代理会先判定是否需要搜索 -> 触发 Tavily -> 汇总价格 -> 可能触发 checklist 工具 -> 返回清单并流式文本
 # 进入输出链接
-# <img width="865" height="533" alt="image" src="https://github.com/user-attachments/assets/c77b53df-080f-4f5c-83a5-785d47ab27a1" />
+<img width="865" height="533" alt="image" src="https://github.com/user-attachments/assets/c77b53df-080f-4f5c-83a5-785d47ab27a1" />
 
 ```
 示例意图：生成机票搜索方案（会返回搜索摘要），随后触发 checklist，最终 SSE 内含 `data-checklist`。
