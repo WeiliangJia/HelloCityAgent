@@ -36,7 +36,7 @@ cp .env.example .env.local
 > 未使用 Azure 时，可设置 `OPENAI_API_KEY` 直接访问 `api.openai.com`。
 
 ## 1. 项目背景
-HelloCityAgent 面向跨国工作者、留学生、旅行者，解决出行落地前后的机票、酒店、签证、交通、保险、身份证件等信息检索痛点。通过多 Agent + 网络搜索（Tavily）+ 摘要 + 反馈的终端体验，降低搜索时间与成本（默认使用 gpt-4o-mini + Tavily），并保留 FastAPI 接口与 RAG 能力，便于接入网页/前端/后端。
+TravellerAgent 面向跨国工作者、留学生、旅行者，解决出行落地前后的机票、酒店、签证、交通、保险、身份证件等信息检索痛点。通过多 Agent + 网络搜索（Tavily）+ 摘要 + 反馈的终端体验，降低搜索时间与成本（默认使用 gpt-4o-mini + Tavily），并保留 FastAPI 接口与 RAG 能力，便于接入网页/前端/后端。
 
 ## 1.1 架构概览
 - **API 层**：`app/api/main.py:46` 起定义 `/chat/{session_id}`，做消息校验、LangGraph 事件驱动、SSE 推流；监听工具调用触发清单生成，推送任务 ID、占位 banner、最终 checklist；`/generate-title` 生成会话标题。
