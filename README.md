@@ -1,517 +1,66 @@
+# HelloCityAgent 多 Agent 指南
 
-# HelloCity AI Service
+## 0. 项目准备
 
-A FastAPI-based AI service powered by LangChain and LangGraph, providing intelligent chat functionality with conversation memory, checklist generation, and SSE streaming for the HelloCity relocation assistant platform.
+### 0.1 环境与工具
+- Python 3.11+
+- Docker Desktop（用于 Redis/Celery）
+- VS Code + Codex 扩展（安装后在左侧出现 OpenAI 图标，需登录 OpenAI）
+- 公共 GitHub 仓库（新建空库后 `git remote set-url origin <your_repo>`）
 
-## 📋 Table of Contents
-
-1. [Requirements](#1-requirements)
-2. [Quick Start](#2-quick-start)
-3. [Environment Configuration](#3-environment-configuration)
-4. [API Endpoints](#4-api-endpoints)
-5. [Key Features](#5-key-features)
-6. [Tech Stack](#6-tech-stack)
-7. [Development Commands](#7-development-commands)
-8. [Integration with HelloCity Ecosystem](#8-integration-with-hellocity-ecosystem)
-9. [Project Structure](#9-project-structure)
-10. [Troubleshooting](#10-troubleshooting)
-11. [Code Quality Standards](#11-code-quality-standards)
-
-## 1. Requirements
-
-- **Python**: 3.11 or higher
-- **Docker Desktop**: 4.43.1 or higher (for Redis and containerized deployment)
-- **OpenAI API Key**: Required for GPT model access
-- **Operating System**: Windows, macOS, Linux
-
-## 2. Quick Start
-
-### Recommended: Local Development (Fastest)
-
-1. **Create & activate virtual environment (recommended):**
-   ```bash
-   python -m venv .venv
-   # macOS/Linux
-   source .venv/bin/activate
-   # Windows (PowerShell)
-   .\.venv\Scripts\Activate
-   pip install -r requirements.txt
-   ```
-
-2. **Create environment file:**
-   ```bash
-   cp .env.example .env.local
-   # Edit .env.local with your OpenAI API key
-   ```
-
-3. **Start Redis (required for Celery):**
-   ```bash
-   docker compose up -d redis
-   ```
-
-4. **Start Celery worker:**
-   ```bash
-   celery -A app.api.tasks worker --loglevel=info --pool=solo
-   ```
-
-5. **Run development server:**
-   ```bash
-   uvicorn app.api.main:app --reload
-   ```
-
-6. **Access API:** http://localhost:8000
-
-**Why Local Over Docker?**
-- ✅ Faster hot-reload (no container rebuild)
-- ✅ Better IDE integration
-- ✅ Direct debugging support
-- ✅ Native performance
-
-### Alternative: Docker Compose
-
-For isolated environment or if you don't have Python 3.11+:
-
+### 0.2 运行依赖
 ```bash
+# <img width="484" height="459" alt="image" src="https://github.com/user-attachments/assets/ed8e9bef-f6f9-48c5-a3b2-b8070fab7109" />
+
+# 启动基础服务（Redis/Celery/Api）
 docker compose up -d
 ```
 
-This starts Redis, API server (port 8000), and Celery worker.
-
-### Terminal Chat (CLI)
-
-Use the bundled CLI tool for quick local conversations (including Tavily web search when `TAVILY_API_KEY` is present):
-
+### 0.3 环境变量
+复制模板并填写 Azure OpenAI 相关配置：
 ```bash
-# Activate your virtualenv first, then run:
-python cli_chat.py --stream
-```
-
-The script auto-loads `.env.local`; set either `OPENAI_API_KEY` or the Azure OpenAI variables plus `TAVILY_API_KEY` before running. For checklist generation and other background tasks, keep Redis + Celery running (`docker compose up redis` and `celery -A app.api.tasks worker --loglevel=info`). Use `/reset` to clear history or `/quit` to exit.
-
-## 3. Environment Configuration
-
-**Required:** Create `.env.local` file in the project root:
-
-```bash
-# macOS/Linux
 cp .env.example .env.local
-
-# Windows
-copy .env.example .env.local
 ```
+关键变量（需在 Azure 上创建部署并填入 .env.local）：
+- `AZURE_OPENAI_API_KEY`
+- `AZURE_OPENAI_ENDPOINT`
+- `AZURE_OPENAI_API_VERSION`（例如 2024-02-15-preview）
+- `AZURE_OPENAI_CHAT_DEPLOYMENT`（示例：gpt-4o-mini）
 
-Populate `.env.local` with actual values:
+> 未使用 Azure 时，可设置 `OPENAI_API_KEY` 直接访问 `api.openai.com`。
 
+## 1. 项目背景
+HelloCityAgent 面向跨国工作者、留学生、旅行者，解决出行落地前后的机票、酒店、签证、交通、保险、身份证件等信息检索痛点。通过多 Agent + 网络搜索（Tavily）+ 摘要 + 反馈的终端体验，降低搜索时间与成本（默认使用 gpt-4o-mini + Tavily），并保留 FastAPI 接口与 RAG 能力，便于接入网页/前端/后端。
+
+## 1.1 架构概览
+- **API 层**：`app/api/main.py:46` 起定义 `/chat/{session_id}`，做消息校验、LangGraph 事件驱动、SSE 推流；监听工具调用触发清单生成，推送任务 ID、占位 banner、最终 checklist；`/generate-title` 生成会话标题。
+- **多 Agent 编排**：`app/core/graph.py:356` 起的 `AgentState` 装配各代理/QA/搜索工具；`get_router_graph_chat` 以判决→路由→聊天/RAG/搜索→总结（可选监督）组织对话；`get_router_graph_generate`/`get_router_graph_convert` 负责 checklist 生成与元数据提取；各 wrapper 处理异常降级与结构化输出。
+- **服务层**：`app/services/message_service.py:5` 校验/转换消息为 LangChain 对象；`app/services/checklist_service.py:7` 提交 Celery、轮询结果、构建“生成中” banner，保证主线程非阻塞。
+- **后台任务**：`app/api/tasks.py:1` 初始化 Celery（Redis broker/backend，结果 1 小时过期）；`create_checklist_items` 依次跑生成图与转换图，整理 LLM 产物为前端需要的 checklist/metadata。
+- **配置与依赖注入**：`app/config/settings.py:6` 读取 `.env.local`（支持 OpenAI/Azure 多模型）；`app/config/dependencies.py:15` 构建聊天/清单/裁判/摘要模型、Chroma 向量库与简化 RetrievalQA。
+- **提示与代理实现**：`prompts/*.txt` 存放提示；`app/agents/` 内含聊天、搜索、清单生成/转换、裁判、RAG、总结、监督等 Agent，由 `AgentState` 注入 LangGraph 节点。
+
+## 1.2 运行流程（终端与接口共用同一图）
+- **终端入口**：`cli_chat.py:8-71` 加载 `.env.local`，循环读取输入，累积为 `HumanMessage/AIMessage` 历史，调用 `get_router_graph_chat().astream_events` 流式输出（或 `ainvoke` 单次返回）。
+- **主对话图**：`app/core/graph.py:35-210` 以 `judge` 起始；判决路由到 `chatbot`（默认聊天/工具调用）、`rag_agent`（RAG 检索）、`price_search`（需要 Tavily 查询）。搜索结果交给 `summary_agent` 再可选 `supervisor_agent` 反思；否则各节点直接回传。
+- **工具触发**：`app/agents/chatbot_agent.py:8-34` React Agent 暴露 `trigger_checklist_generation`（可选 QA 工具）。LLM 触发时事件中可见 tool call。
+- **SSE 推流**：`app/api/main.py:47-210` 监听 LangGraph 事件：`on_chat_model_stream` 推 `text-delta`，`on_node_end` 推 summary/search/supervisor 等 payload。检测到 `trigger_checklist_generation` 时提交 Celery，先推 `task-id` + `data-checklist-pending`，等待结果后推 `data-checklist` 或 `data-checklist-error`。
+- **清单生成链路**：`app/api/tasks.py:1-250` 的 `create_checklist_items` 使用 `get_router_graph_generate`（`graph.py:214-244`，`websearch_agent`→`checklist_generator`）和 `get_router_graph_convert`（`graph.py:248-257` 提取元数据）产出 checklist，`_build_frontend_checklist` 计算 `dueDate`/`checklistId` 等并返回，主进程 SSE 推送。
+- **消息预处理**：`app/services/message_service.py:4-39` 将外部 dict 转成 LangChain 消息，API 与 CLI 共用。
+
+## 2. 终端对话示例
 ```bash
-# Required: OpenAI Configuration
-OPENAI_API_KEY=sk-...
+python cli_chat.py --stream
+# 输入示例：
+# <img width="808" height="695" alt="image" src="https://github.com/user-attachments/assets/f089a83d-58b1-41a5-8ebb-1acef54aad52" />
 
-# Optional: Azure OpenAI (set all of these to route traffic through Azure)
-AZURE_OPENAI_API_KEY=azure-...
-AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
-AZURE_OPENAI_API_VERSION=2024-02-15-preview
-AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o-mini
-AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT=text-embedding-3-small
-
-# Dual Model Strategy (recommended for cost/performance optimization)
-LLM_MODEL_CHAT=gpt-4o-mini       # Fast model for conversation
-LLM_MODEL_CHECKLIST=gpt-4o-mini  # High-quality model for checklist generation
-LLM_MODEL=gpt-4o-mini            # Fallback for backward compatibility
-
-# Required: Celery/Redis (auto-configured for Docker Compose)
-CELERY_BROKER_URL=redis://localhost:6379/0
-CELERY_RESULT_BACKEND=redis://localhost:6379/0
-
-# Optional: Logging Level
-LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR
-```
-
-### Important Configuration Notes
-
-**Celery Task Result Expiration:**
-- Task results are automatically deleted after **1 hour** (3600 seconds)
-- Configured in `app/api/tasks.py`: `celery_app.conf.result_expires = 3600`
-- Prevents Redis OOM by removing completed checklist generation results
-- Frontend polls for max 5 minutes, so 1 hour provides ample buffer for page refreshes and network delays
-
-**Dynamic Model Changes:**
-- Simply edit `.env.local` and restart: `docker compose restart api celery`
-- No caching ensures changes take effect immediately
-- When Azure variables are present, the backend automatically instantiates `AzureChatOpenAI`/`AzureOpenAIEmbeddings`; omit them to keep calling `api.openai.com`
-
-**Never commit `.env.local` to version control!**
-
-## 4. API Endpoints
-
-### Chat Streaming (Primary Endpoint)
-**POST /chat/{session_id}**
-
-Streams AI responses via Server-Sent Events (SSE). Accepts full conversation history and returns real-time streaming events.
-
-**Request Body**:
-```json
-{
-  "messages": [
-    {"role": "user", "content": "I want to visit Sydney"},
-    {"role": "assistant", "content": "Great choice! When are you planning to arrive?"},
-    {"role": "user", "content": "Next month, for 5 days"}
-  ]
-}
-```
-
-**Response**: SSE stream with events:
-- `text-delta` - Token chunks from AI
-- `task-id` - Celery task ID for checklist generation
-- `data-checklist-pending` - Checklist generation started
-- `data-checklist-banner` - Temporary placeholder
-- `data-checklist` - Final generated checklist
-- `data-checklist-error` - Generation failed
-
-### Title Generation
-**POST /generate-title**
-
-Generates a concise title for a conversation based on the first message.
-
-**Request Body**:
-```json
-{
-  "firstMessage": "I'm planning to move to Sydney for work"
-}
-```
-
-**Response**:
-```json
-{
-  "title": "Moving to Sydney for Work"
-}
-```
-
-### Task Status
-**GET /tasks/{task_id}**
-
-Check the status of a background Celery task (e.g., checklist generation).
-
-**Response**:
-```json
-{
-  "task_id": "abc123",
-  "status": "SUCCESS",
-  "result": { ... }
-}
-```
-
-## 5. Key Features
-
-### Stateless Chat Architecture
-- **Full History Per Request**: Client sends complete conversation history for scalability
-- **No Server-Side Sessions**: Eliminates memory overhead and cache consistency issues
-- **LangGraph Checkpointing**: `session_id` used only for threading, not persistence
-
-### AI-Powered Checklist Generation
-- **Automatic Detection**: Triggers when user info is complete
-- **Background Processing**: Celery handles async generation without blocking chat
-- **Structured Output**: Generates title, items, metadata (city, stay type, duration)
-- **Dual-Stage Pipeline**: Generation → Metadata Extraction
-
-### Multi-Agent Architecture
-- **Chatbot Agent**: Conversational interviewer with tool calling
-- **Checklist Generator**: Creates structured task lists
-- **Checklist Converter**: Extracts metadata (city, dates, stay type)
-- **Web Search Agent**: Confidence-based retry mechanism with Tavily integration
-- **LangGraph Orchestration**: State machine routes between agents (recursion_limit=50)
-
-### Token-Level Streaming
-- **Real-Time SSE**: Server-Sent Events for smooth UX
-- **Message Trimming**: Automatic 16k token limit management
-- **Dual Model Strategy**: Fast model for chat (gpt-4o-mini), high-quality for checklists
-
-### Hot-Reload Configuration
-- **No Caching**: All dependencies created without `@lru_cache`
-- **Dynamic Model Changes**: Edit `.env.local` and restart services
-- **Dependency Injection**: Type-safe providers via FastAPI `Depends()`
-
-## 6. Tech Stack
-
-### Core Framework
-- [FastAPI](https://fastapi.tiangolo.com/) - Async web framework with SSE streaming
-- [Python 3.11+](https://www.python.org/) - Programming language
-
-### AI & LLM
-- [LangChain](https://python.langchain.com/) - LLM framework with tool support
-- [LangGraph](https://langchain-ai.github.io/langgraph/) - Multi-agent state machine orchestration
-- [OpenAI](https://openai.com/) - GPT model provider (gpt-4o-mini, gpt-5-chat)
-- [Pydantic](https://docs.pydantic.dev/) - Data validation and settings management
-
-### Background Processing
-- [Celery](https://docs.celeryq.dev/) - Distributed task queue
-- [Redis](https://redis.io/) - Message broker for Celery
-
-### Vector Store & Search
-- [ChromaDB](https://www.trychroma.com/) - Embedding storage for RAG
-- [Tavily](https://tavily.com/) - Web search API integration
-
-### Development Tools
-- [uvicorn](https://www.uvicorn.org/) - ASGI server for FastAPI
-- [python-dotenv](https://github.com/theskumar/python-dotenv) - Environment variable management
-
-## 7. Development Commands
-
-### Start Services
-
-```bash
-# Start all services (Docker)
-docker compose up -d
-
-# Start Redis only (for local Python dev)
-docker compose up -d redis
-
-# Start API server (local)
-uvicorn app.main:app --reload
-
-# Start Celery worker (local)
-celery -A app.api.tasks worker --loglevel=info --pool=solo
-```
-
-### View Logs
-
-```bash
-# View API logs
-docker compose logs -f api
-
-# View Celery logs
-docker compose logs -f celery
-
-# View Redis logs
-docker compose logs -f redis
-
-# View streaming debug logs
-docker compose logs -f api | grep -E "DEBUG-TOKEN|DEBUG-TOOL|DEBUG-LLM"
-```
-
-### Restart Services
-
-```bash
-# Restart API only
-docker compose restart api
-
-# Restart Celery only
-docker compose restart celery
-
-# Restart all services
-docker compose restart
-```
-
-### Stop Services
-
-```bash
-# Stop all services
-docker compose down
-
-# Stop and remove volumes
-docker compose down -v
-```
-
-## 8. Integration with HelloCity Ecosystem
-
-### Service Communication Flow
-```
-Frontend (Next.js)
-  ↓ POST /api/chat (full conversation history)
-.NET Backend (ChatProxyController)
-  ↓ POST /chat/{conversationId} (SSE proxy)
-Python AI Service (FastAPI + LangGraph)
-  ↓ OpenAI API (streaming)
-  ↓ LangChain tool: trigger_checklist_generation
-  ↓ Celery background task (15-30s)
-  ↓ SSE: data-checklist event
-.NET Backend (ChecklistService)
-  ↓ Parse and persist to PostgreSQL
-Frontend
-  ↓ Display completed checklist
-```
-
-### Data Flow
-1. Frontend sends complete conversation history to .NET backend
-2. .NET validates Auth0 JWT, forwards to Python AI service
-3. Python converts dict messages → LangChain objects → LangGraph → OpenAI
-4. OpenAI streams tokens back through Python → .NET → Frontend
-5. Python AI detects user info completeness, triggers checklist generation tool
-6. Celery task generates structured checklist asynchronously (stored in Redis for 1 hour)
-7. Python emits `data-checklist` SSE event with full payload
-8. .NET parses payload, persists to PostgreSQL (permanent storage)
-9. Frontend polls Celery task status (max 5 minutes), displays checklist when complete
-
-### Message Format Agreement
-- **Input**: `{"messages": [{"role": "user", "content": "..."}]}`
-- **Output**: SSE events with camelCase JSON (matches .NET global serialization)
-- **LangChain Conversion**: Dicts → `HumanMessage`/`AIMessage` objects required for LangGraph
-
-## 9. Project Structure
+# 代理会先判定是否需要搜索 -> 触发 Tavily -> 汇总价格 -> 可能触发 checklist 工具 -> 返回清单并流式文本
+# 进入输出链接
+# <img width="865" height="533" alt="image" src="https://github.com/user-attachments/assets/c77b53df-080f-4f5c-83a5-785d47ab27a1" />
 
 ```
-app/
-├── api/                        # API Layer
-│   ├── main.py                 # FastAPI app entry point
-│   ├── tasks.py                # Celery task definitions
-│   └── routes/                 # Additional route modules
-├── services/                   # Service Layer (NEW)
-│   ├── message_service.py      # Message validation & conversion
-│   └── checklist_service.py    # Checklist business logic
-├── core/                       # Core Layer
-│   ├── graph.py                # LangGraph router with singleton
-│   └── hooks.py                # Pre-model hooks (message trimming)
-├── agents/                     # Domain Layer
-│   ├── chatbot_agent.py        # Conversational interviewer
-│   ├── checklist_generator_agent.py    # Checklist creation
-│   ├── checklist_converter_agent.py    # Metadata extraction
-│   └── websearch_agent.py      # Web search integration
-├── config/                     # Configuration Layer (NEW)
-│   ├── settings.py             # Pydantic Settings
-│   └── dependencies.py         # Dependency injection providers
-├── schemas/                    # Pydantic Models
-│   ├── checklist_schema.py     # Checklist schemas
-│   └── chat_schema.py          # Chat request/response
-└── utils/                      # Helper Utilities
-```
+示例意图：生成机票搜索方案（会返回搜索摘要），随后触发 checklist，最终 SSE 内含 `data-checklist`。
 
-### Architecture Highlights
-- **Layered Architecture**: Clean separation of concerns (API → Service → Core → Domain)
-- **Stateless Design**: No server-side session caching, client sends full history
-- **Dual Model Strategy**: Separate models for chat (fast) and checklist (high-quality)
-- **Hot-Reload Config**: No caching allows dynamic model changes via `.env.local`
-- **Dependency Injection**: Type-safe providers for LLM, vectorstore, graphs
-- **Service Layer Pattern**: Business logic separated from HTTP concerns
-- **Message Trimming**: Automatic token management (16k token limit) before LLM calls
+## 3. 心得体会
+Agent/AIOps 工具链显著压缩了交付周期：过去中小型全栈项目需多人月，如今中级开发者借助 Codex/Claude/Cursor + Azure OpenAI 等，可在一周完成约 80% 工作。生态仍在快速演化（如 MCP 协议等），持续学习与适配新工具是开发者保持竞争力的关键。
 
-## 10. Troubleshooting
-
-### Issue: AI responses lose context
-**Solution**: Ensure .NET backend sends full conversation history in `messages[]` array, not just last message. Architecture is stateless by design.
-
-### Issue: Messages not reaching OpenAI
-**Solutions**:
-1. Check `app/services/message_service.py` - Verify `convert_to_langchain_messages()` is called
-2. Check `app/core/hooks.py` - Ensure `pre_model_hook` isn't trimming all messages (max 16k tokens)
-3. Verify LangChain message objects created correctly (`HumanMessage`/`AIMessage`, not dicts)
-
-### Issue: Tool calls triggering prematurely
-**Solution**: Review chatbot agent prompt in `app/agents/chatbot_agent.py`. Strengthen "DO NOT CALL" conditions.
-
-### Issue: Dependency injection not working
-**Solutions**:
-1. Check `app/config/settings.py` - Ensure `.env.local` exists with required vars
-2. Verify dependency functions are properly defined in `app/config/dependencies.py`
-3. Use `Depends(get_dependency)` in FastAPI route parameters
-4. Restart containers to pick up `.env.local` changes: `docker compose restart api celery`
-
-### Issue: Redis memory growing indefinitely
-**Solution**: Already fixed! `celery_app.conf.result_expires = 3600` in `app/api/tasks.py` auto-deletes task results after 1 hour.
-
-### Issue: Model changes not taking effect
-**Solutions**:
-1. Edit `.env.local` with new model names
-2. Restart containers: `docker compose restart api celery`
-3. Verify in logs: `docker compose logs api celery | grep "DEBUG-LLM"`
-4. No code changes needed - hot-reload is enabled
-
-## 11. Code Quality Standards
-
-### Service Layer Pattern
-- Business logic MUST be in `app/services/`, not `app/api/main.py`
-- API layer handles HTTP concerns only (request/response)
-- Services return domain objects, not HTTP responses
-
-### Dependency Injection
-- Use `Depends()` to inject into FastAPI routes
-- No caching for hot-reload capability (removed all `@lru_cache`)
-- Never use global variables or `app.state` for dependencies
-- Always use Pydantic Settings for configuration
-
-### Function Size & Responsibility
-- Keep functions under 50 lines
-- Extract nested functions to module level
-- One function = one responsibility
-
-### Configuration Management
-- Use Pydantic Settings for all env vars
-- Never hardcode model names, API keys, or URLs
-- Support dynamic changes without code deployment
-
-## Example Usage
-
-### Stateless Chat Flow
-```bash
-# 1) Start conversation (no session history)
-curl -X POST "http://localhost:8000/chat/session-123" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "I want to visit Sydney"}
-    ]
-  }'
-
-# 2) Continue conversation (send full history)
-curl -X POST "http://localhost:8000/chat/session-123" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "I want to visit Sydney"},
-      {"role": "assistant", "content": "Great! When are you planning to arrive?"},
-      {"role": "user", "content": "Next month for 5 days"}
-    ]
-  }'
-
-# 3) Provide all details to trigger checklist generation
-curl -X POST "http://localhost:8000/chat/session-123" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "I want to visit Sydney"},
-      {"role": "assistant", "content": "Great! When are you planning to arrive?"},
-      {"role": "user", "content": "Next month for 5 days. Just me, budget-friendly, interested in public transport and iconic sights"},
-      {"role": "assistant", "content": "Perfect! I have all the details. Let me confirm: ..."},
-      {"role": "user", "content": "Yes, please create the checklist"}
-    ]
-  }'
-```
-
-**Note**:
-- The service is **stateless** - always send the complete conversation history
-- `session_id` is used only for LangGraph checkpointer threading
-- Backend (.NET) automatically stores messages in PostgreSQL
-
-### Generate Conversation Title
-```bash
-curl -X POST "http://localhost:8000/generate-title" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "firstMessage": "I am planning to relocate to Melbourne for a new job"
-  }'
-```
-
-### Check Task Status
-```bash
-curl -X GET "http://localhost:8000/tasks/abc-123-def-456"
-```
-
-## Project Status
-
-**Last Updated**: 2025-01-14
-
-**Recent Improvements**:
-- ✅ Stateless architecture (removed server-side session caching)
-- ✅ Dual model strategy (separate models for chat vs checklist)
-- ✅ Hot-reload configuration (removed all caching for dynamic model changes)
-- ✅ Websearch agent with confidence-based retry mechanism (recursion_limit=50)
-- ✅ Dependency injection refactoring (`app.state` → dependency providers)
-- ✅ Service layer extraction (business logic separated from HTTP)
-- ✅ Function decomposition (reduced complexity)
-- ✅ Structured output for checklists (`with_structured_output()`)
-- ✅ Async task streaming with `task-id` SSE events
-- ✅ Celery result expiration (1 hour TTL to prevent Redis OOM)
-
-**See CLAUDE.md** for detailed architecture documentation and integration guides.
-
----
-
-For questions or issues, please contact the development team or file an issue in the project repository.
